@@ -1,0 +1,72 @@
+# Resolve react_native_pods.rb with node to allow for hoisting
+require Pod::Executable.execute_command('node', ['-p',
+  'require.resolve(
+    "react-native/scripts/react_native_pods.rb",
+    {paths: [process.argv[1]]},
+  )', __dir__]).strip
+
+platform :ios, min_ios_version_supported
+prepare_react_native_project!
+
+linkage = ENV['USE_FRAMEWORKS']
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
+target 'RNPythonBridge' do
+  config = use_native_modules!
+
+  pod 'RNPythonBridge', :path => '../'
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false,
+    )
+
+    # Add a build phase to copy the Python stdlib into the app bundle
+    stdlib_source = File.expand_path('../ios/lib/python3.13', __dir__)
+    installer.aggregate_targets
+      .flat_map { |at| at.user_project.native_targets }
+      .select { |t| t.name == 'RNPythonBridge' }
+      .each do |app_target|
+        # Remove old stdlib copy phases to avoid duplicates on reinstall
+        app_target.build_phases
+          .select { |p| p.respond_to?(:name) && p.name == 'Copy Python Stdlib' }
+          .each { |p| app_target.build_phases.delete(p) }
+        phase = app_target.new_shell_script_build_phase("Copy Python Stdlib")
+        phase.shell_script = <<~SCRIPT
+          STDLIB_SRC="#{stdlib_source}"
+          STDLIB_DST="${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/lib/python3.13"
+          # Remove legacy location
+          rm -rf "${BUILT_PRODUCTS_DIR}/${CONTENTS_FOLDER_PATH}/python3.13"
+          if [ -d "$STDLIB_SRC" ]; then
+            rm -rf "$STDLIB_DST"
+            mkdir -p "$(dirname "$STDLIB_DST")"
+            cp -R "$STDLIB_SRC" "$STDLIB_DST"
+            echo "Copied Python stdlib ($(du -sh "$STDLIB_DST" | cut -f1))"
+          else
+            echo "Warning: stdlib not found at $STDLIB_SRC"
+          fi
+        SCRIPT
+      end
+
+    # Force-link libpython3.13.a
+    lib_path = File.expand_path('../ios/lib/libpython3.13.a', __dir__)
+    installer.pods_project.targets.each do |target|
+      next unless target.name == "RNPythonBridge"
+      target.build_configurations.each do |config|
+        config.build_settings['OTHER_LDFLAGS'] ||= ['$(inherited)']
+        config.build_settings['OTHER_LDFLAGS'] << "-Wl,-force_load,#{lib_path}"
+      end
+    end
+  end
+end
