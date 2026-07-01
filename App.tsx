@@ -6,6 +6,7 @@ function App() {
   const [pyMessage, setPyMessage] = useState('');
   const [nativeLog, setNativeLog] = useState('');
   const [nativeError, setNativeError] = useState('');
+  const [numpyResult, setNumpyResult] = useState('');
 
   useEffect(() => {
     const r1 = callPython("hello", "hello_world", "ROAM");
@@ -20,6 +21,9 @@ function App() {
 
     const r3 = callPythonArgs("hello", "add", [10, 20, 30]);
     setNativeError(r3.error ? 'Error: ' + r3.error : r3.value);
+
+    const r4 = callPython("numpy_test", "diagnostics", []);
+    setNumpyResult(r4.error ? 'Numpy error: ' + r4.error : r4.value);
   }, []);
 
   return (
@@ -28,6 +32,8 @@ function App() {
       <Text style={styles.text}>{pyMessage}</Text>
       <Text style={styles.error}>{nativeError}</Text>
       <Text style={styles.log}>{nativeLog}</Text>
+      <Text style={styles.label}>Numpy:</Text>
+      <Text style={styles.text}>{numpyResult}</Text>
     </SafeAreaView>
   );
 }

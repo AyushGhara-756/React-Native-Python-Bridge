@@ -36,7 +36,7 @@ static PyObject* objcToPython(id obj) {
 RCT_EXPORT_MODULE(RNPythonBridge)
 
 + (BOOL)requiresMainQueueSetup {
-  return NO;
+  return YES;
 }
 
 - (instancetype)init {
@@ -66,6 +66,7 @@ RCT_EXPORT_MODULE(RNPythonBridge)
 
 RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(NSString *, callPython: (NSString*)moduleName :(NSString*)functionName :(id)arg)
 {
+  PyGILState_STATE gstate = PyGILState_Ensure();
   PyObject* pyObj = objcToPython(arg);
   PyObject* pyArgs = PyTuple_Pack(1, pyObj);
   Py_DECREF(pyObj);
@@ -73,6 +74,7 @@ RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(NSString *, callPython: (NSString*)moduleNam
     [moduleName UTF8String], [functionName UTF8String], pyArgs
   );
   Py_DECREF(pyArgs);
+  PyGILState_Release(gstate);
   const char* lastError = PythonBridge_getLastError();
   if (lastError && lastError[0]) {
     RCTLogError(@"PythonBridge error: %s", lastError);
@@ -82,6 +84,7 @@ RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(NSString *, callPython: (NSString*)moduleNam
 
 RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(NSString *, callPythonArgs: (NSString*)moduleName :(NSString*)functionName :(NSArray*)args)
 {
+  PyGILState_STATE gstate = PyGILState_Ensure();
   PyObject* pyArgs = PyTuple_New([args count]);
   for (NSUInteger i = 0; i < [args count]; i++) {
     PyObject* pyObj = objcToPython(args[i]);
@@ -91,6 +94,7 @@ RCT_EXPORT_SYNCHRONOUS_TYPED_METHOD(NSString *, callPythonArgs: (NSString*)modul
     [moduleName UTF8String], [functionName UTF8String], pyArgs
   );
   Py_DECREF(pyArgs);
+  PyGILState_Release(gstate);
   const char* lastError = PythonBridge_getLastError();
   if (lastError && lastError[0]) {
     RCTLogError(@"PythonBridge error: %s", lastError);

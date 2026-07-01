@@ -289,7 +289,7 @@
 #define HAVE_DLFCN_H 1
 
 /* Define to 1 if you have the `dlopen' function. */
-/* #undef HAVE_DLOPEN */
+#define HAVE_DLOPEN 1
 
 /* Define to 1 if you have the `dup' function. */
 #define HAVE_DUP 1
@@ -304,7 +304,7 @@
 #define HAVE_DYLD_SHARED_CACHE_CONTAINS_PATH 1
 
 /* Defined when any dynamic module loading is enabled. */
-/* #undef HAVE_DYNAMIC_LOADING */
+#define HAVE_DYNAMIC_LOADING 1
 
 /* Define to 1 if you have the <editline/readline.h> header file. */
 /* #undef HAVE_EDITLINE_READLINE_H */

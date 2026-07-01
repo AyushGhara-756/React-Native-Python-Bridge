@@ -60,6 +60,15 @@ static void logError(const char *msg)
 namespace rnpythonbridge
 {
 
+  // RAII guard: acquire GIL on construction, release on destruction
+  struct GILGuard {
+    PyGILState_STATE state;
+    GILGuard()  { state = PyGILState_Ensure(); }
+    ~GILGuard() { PyGILState_Release(state); }
+    GILGuard(const GILGuard&) = delete;
+    GILGuard& operator=(const GILGuard&) = delete;
+  };
+
   PythonBridge &PythonBridge::getInstance()
   {
     static PythonBridge instance;
@@ -73,16 +82,6 @@ namespace rnpythonbridge
       return true;
     }
 
-    setenv("PYTHONMALLOC", "malloc", 1);
-    if (pythonHome)
-    {
-      wchar_t whome[1024];
-      mbstowcs(whome, pythonHome, 1024);
-      #pragma GCC diagnostic push
-      #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-      Py_SetPythonHome(whome);
-      #pragma GCC diagnostic pop
-    }
     Py_Initialize();
     if (!Py_IsInitialized())
     {
@@ -107,6 +106,12 @@ namespace rnpythonbridge
       }
     }
 
+    // Release GIL so other threads can acquire it via PyGILState_Ensure
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    PyEval_SaveThread();
+    #pragma GCC diagnostic pop
+
     initialized_ = true;
     return true;
   }
@@ -117,6 +122,8 @@ namespace rnpythonbridge
     {
       return "Error: Python not initialized";
     }
+
+    GILGuard gil;
 
     PyObject *pModule = PyImport_ImportModule(moduleName);
     if (!pModule)
@@ -197,6 +204,8 @@ namespace rnpythonbridge
     {
       return "Error: Python not initialized";
     }
+
+    GILGuard gil;
 
     PyObject *pModule = PyImport_ImportModule(moduleName);
     if (!pModule)

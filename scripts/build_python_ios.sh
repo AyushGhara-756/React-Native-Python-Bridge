@@ -64,9 +64,9 @@ echo "=== Configuring CPython for iOS arm64 ==="
   ac_cv_func_system=no \
   ac_cv_func_pipe=no \
   ac_cv_func_pipe2=no \
-  ac_cv_func_dlopen=no \
-  ac_cv_func_dlclose=no \
-  ac_cv_func_dlsym=no \
+  ac_cv_func_dlopen=yes \
+  ac_cv_func_dlclose=yes \
+  ac_cv_func_dlsym=yes \
   ac_cv_have_long_long_format=yes \
   ac_cv_type_uid_t=yes \
   ac_cv_type_gid_t=yes \
