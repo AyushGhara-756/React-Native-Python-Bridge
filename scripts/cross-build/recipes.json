@@ -1,0 +1,50 @@
+{
+  "numpy": {
+    "build": "meson",
+    "note": "Uses vendored-meson fork for CPU feature detection"
+  },
+  "pandas": {
+    "build": "meson",
+    "note": "Pandas >=2.2 uses Meson like numpy"
+  },
+  "scipy": {
+    "build": "meson",
+    "note": "Scipy >=1.10 uses Meson; needs Accelerate.framework for BLAS"
+  },
+  "bottleneck": {
+    "build": "setuptools",
+    "note": "Simple C extension, setuptools-based"
+  },
+  "matplotlib": {
+    "build": "setuptools",
+    "note": "Complex build, needs many native deps (freetype, etc.)"
+  },
+  "pillow": {
+    "build": "setuptools",
+    "note": "Needs libjpeg, libpng cross-compiled first"
+  },
+  "scikit-learn": {
+    "build": "setuptools",
+    "note": "Cython-based C extensions, needs numpy built first"
+  },
+  "cffi": {
+    "build": "setuptools",
+    "note": "Needs libffi cross-compiled for iOS"
+  },
+  "cryptography": {
+    "build": "setuptools",
+    "note": "Needs OpenSSL cross-compiled for iOS"
+  },
+  "h5py": {
+    "build": "setuptools",
+    "note": "Needs HDF5 cross-compiled for iOS"
+  },
+  "lxml": {
+    "build": "setuptools",
+    "note": "Needs libxml2, libxslt cross-compiled"
+  },
+  "pynacl": {
+    "build": "setuptools",
+    "note": "Needs libsodium cross-compiled"
+  }
+}

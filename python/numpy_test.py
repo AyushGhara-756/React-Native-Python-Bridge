@@ -1,9 +1,19 @@
 def diagnostics(_unused=None):
     import numpy as np
+    import traceback
     a = np.array([1, 2, 3])
     s = np.sum(a)
     m = np.mean(a)
-    return f"numpy {np.__version__}: sum={s} mean={m}"
+    p = ""
+    try:
+        import pandas as pd
+        df = pd.DataFrame({"x": [1, 2, 3], "y": [4, 5, 6]})
+        p = f" pandas {pd.__version__}: {df.shape}"
+    except Exception:
+        tb = traceback.format_exc()
+        lines = tb.split("\n")
+        p = f" pandas err: {' '.join(lines[-10:])}"
+    return f"numpy {np.__version__}: sum={s} mean={m} | {p}"
 
 def array_sum(arr):
     try:
