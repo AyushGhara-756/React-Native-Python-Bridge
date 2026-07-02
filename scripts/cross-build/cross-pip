@@ -3,11 +3,14 @@
 cross-pip — cross-compile Python packages for iOS.
 
 Usage:
-  cross-pip install <package>        latest version
-  cross-pip install <package>==X.Y   specific version
-  cross-pip install -r deps.txt      batch install
-  cross-pip list                     show installed packages
-  cross-pip info <package>           show how a package would be built
+  cross-pip install <package>              latest version
+  cross-pip install <package>==X.Y         specific version
+  cross-pip install -r deps.txt            batch install
+  cross-pip install --dry-run <package>    dry run (no changes)
+  cross-pip install --force-reinstall ...  reinstall even if present
+  cross-pip install --upgrade ...          upgrade to latest
+  cross-pip list                           show installed packages
+  cross-pip info <package>                 show how a package would be built
 """
 import argparse
 import json
@@ -22,6 +25,8 @@ import textwrap
 import urllib.request
 import zipfile
 from pathlib import Path
+
+VERSION = "1.1.0"
 
 # ── Project paths ──────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -136,6 +141,51 @@ def build_method(package_name):
     if info:
         return info.get("build", "setuptools")
     return None
+
+
+def detect_build_system_from_sdist(src_dir):
+    """Inspect an extracted sdist to determine the build system.
+    
+    Returns 'meson', 'setuptools', or None (pure Python / unknown).
+    """
+    src_dir = str(src_dir)
+    has_meson_build = os.path.exists(os.path.join(src_dir, "meson.build"))
+    has_setup_py = os.path.exists(os.path.join(src_dir, "setup.py"))
+    has_setup_cfg = os.path.exists(os.path.join(src_dir, "setup.cfg"))
+
+    # Check pyproject.toml for build-backend hint
+    pyproject_path = os.path.join(src_dir, "pyproject.toml")
+    build_backend = None
+    if os.path.exists(pyproject_path):
+        try:
+            import tomllib
+            with open(pyproject_path, "rb") as f:
+                pyproject = tomllib.load(f)
+            build_system = pyproject.get("build-system", {}) or {}
+            build_backend = (build_system.get("build-backend") or "").lower()
+        except Exception:
+            pass
+
+    if has_meson_build or "meson" in (build_backend or ""):
+        return "meson"
+    if has_setup_py or has_setup_cfg or "setuptools" in (build_backend or ""):
+        return "setuptools"
+    if build_backend:
+        return "setuptools"  # unknown backend, try setuptools as fallback
+    return None
+
+
+def has_c_extensions_in_sdist(src_dir):
+    """Check if an extracted sdist contains .c, .pyx, or .cpp files (C extensions)."""
+    src_dir = str(src_dir)
+    for root, dirs, files in os.walk(src_dir):
+        # Skip common non-source dirs
+        if "/." in root or "/__pycache__" in root:
+            continue
+        for f in files:
+            if f.endswith((".c", ".pyx", ".cpp", ".cc")):
+                return True
+    return False
 
 
 # ── Generate .pc file for iOS Python ──────────────────────────────────
@@ -547,7 +597,7 @@ def post_process_so_files(pkg_dir, verbose=False):
 # ── Dependency resolution ─────────────────────────────────────────────
 
 
-def resolve_deps(package_name, version, seen=None, verbose=False):
+def resolve_deps(package_name, version, seen=None, verbose=False, force=False, upgrade=False):
     """Recursively resolve dependencies. Returns list of (name, version, method)."""
     if seen is None:
         seen = set()
@@ -557,9 +607,9 @@ def resolve_deps(package_name, version, seen=None, verbose=False):
         return result
     seen.add(package_name.lower())
 
-    # Check if already installed
+    # Check if already installed (skip unless force or upgrade)
     pkg_dir = IOS_SITE_PACKAGES / package_name
-    if pkg_dir.exists():
+    if pkg_dir.exists() and not force and not upgrade:
         if verbose:
             print(f"  {package_name}: already installed, skipping")
         return result
@@ -579,7 +629,7 @@ def resolve_deps(package_name, version, seen=None, verbose=False):
 
     # Install deps first
     for dep_name, dep_spec in deps:
-        sub_result = resolve_deps(dep_name, None, seen, verbose)
+        sub_result = resolve_deps(dep_name, None, seen, verbose, force, upgrade)
         result.extend(sub_result)
 
     # Determine build method
@@ -595,7 +645,82 @@ def resolve_deps(package_name, version, seen=None, verbose=False):
 # ── CLI ────────────────────────────────────────────────────────────────
 
 
+def _download_and_extract_sdist(name, version, dest_dir, verbose=False):
+    """Download and extract an sdist. Returns the extracted source dir or None."""
+    spec = f"{name}=={version}" if version else name
+    os.makedirs(dest_dir, exist_ok=True)
+    try:
+        if verbose:
+            print(f"  Downloading {spec} source...")
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "download",
+            "--no-binary", ":all:",
+            "--dest", dest_dir,
+            "--no-deps",
+            spec,
+        ], stdout=subprocess.DEVNULL if not verbose else None,
+           stderr=subprocess.STDOUT if not verbose else None)
+    except subprocess.CalledProcessError:
+        return None
+
+    extracted = None
+    for fname in os.listdir(dest_dir):
+        fpath = os.path.join(dest_dir, fname)
+        if fname.endswith(".tar.gz"):
+            subprocess.check_call(["tar", "xzf", fpath, "-C", dest_dir])
+            extracted = os.path.join(dest_dir, fname.replace(".tar.gz", ""))
+            if os.path.isdir(extracted):
+                break
+        elif fname.endswith(".zip"):
+            with zipfile.ZipFile(fpath, "r") as zf:
+                zf.extractall(dest_dir)
+            extracted = os.path.join(dest_dir, fname.replace(".zip", ""))
+            if os.path.isdir(extracted):
+                break
+
+    if not extracted or not os.path.isdir(extracted):
+        # Try without version suffix
+        for fname in os.listdir(dest_dir):
+            fpath = os.path.join(dest_dir, fname)
+            if os.path.isdir(fpath) and fpath != dest_dir:
+                extracted = fpath
+                break
+    return extracted
+
+
+def _auto_detect_method(name, version, work_dir, verbose=False):
+    """Download sdist and auto-detect build method for an unknown package.
+    
+    Returns ('meson', src_dir), ('setuptools', src_dir), or (None, None).
+    """
+    sdist_dir = os.path.join(work_dir, "sdist")
+    if os.path.exists(sdist_dir):
+        shutil.rmtree(sdist_dir)
+    src_dir = _download_and_extract_sdist(name, version, sdist_dir, verbose)
+    if not src_dir:
+        return None, None
+
+    has_c = has_c_extensions_in_sdist(src_dir)
+    if not has_c:
+        if verbose:
+            print(f"  No C extensions found in sdist for {name}")
+        return None, src_dir  # pure Python, let caller decide
+
+    method = detect_build_system_from_sdist(src_dir)
+    if method:
+        if verbose:
+            print(f"  Detected build system: {method}")
+        return method, src_dir
+
+    if verbose:
+        print(f"  Could not detect build system for {name}, falling back to setuptools")
+    return "setuptools", src_dir
+
+
 def cmd_install(args):
+    force = args.force_reinstall or args.upgrade
+    dry_run = args.dry_run
+
     packages = []
     if args.requirements:
         with open(args.requirements) as f:
@@ -614,10 +739,14 @@ def cmd_install(args):
             continue
         pkg_name, pkg_ver = m.group(1), m.group(2)
 
-        print(f"\n=== Resolving {pkg_name} ===")
+        if dry_run:
+            print(f"\n=== Would resolve {pkg_name} ===")
+        else:
+            print(f"\n=== Resolving {pkg_name} ===")
 
         # Resolve dependencies
-        dep_chain = resolve_deps(pkg_name, pkg_ver, verbose=args.verbose)
+        dep_chain = resolve_deps(pkg_name, pkg_ver, verbose=args.verbose,
+                                 force=force, upgrade=args.upgrade)
         if not dep_chain:
             print(f"  (nothing to install)")
             continue
@@ -626,20 +755,48 @@ def cmd_install(args):
         # Sort: non-meson first, then meson, then the target package
         dep_chain.sort(key=lambda x: (x[2] != "pure", x[0] == pkg_name))
 
+        if dry_run:
+            print("  Would install:")
+            for dep_name, dep_ver, method in dep_chain:
+                label = f"{dep_name}=={dep_ver}"
+                if method == "meson":
+                    print(f"    ⏬ {label} (cross-compile with Meson)")
+                elif method == "setuptools":
+                    print(f"    ⏬ {label} (cross-compile with setuptools)")
+                else:
+                    print(f"    📦 {label} (pip install)")
+            continue
+
         for dep_name, dep_ver, method in dep_chain:
             if dep_name == pkg_name:
                 print(f"\n*** Installing {dep_name}=={dep_ver} (target) ***")
             else:
                 print(f"\n  Installing dependency: {dep_name}=={dep_ver}")
 
+            # --- Pure Python install ---
             if method == "pure":
                 ok = install_pure_python(dep_name, dep_ver, IOS_SITE_PACKAGES, args.verbose)
                 if ok:
                     print(f"  ✓ {dep_name}=={dep_ver} installed (pure Python)")
+                    continue
+                # Pure pip failed → try to detect build system and cross-build
+                print(f"  ✗ {dep_name}=={dep_ver} pure install failed, checking for C extensions...")
+                work_dir = f"/tmp/cross-build-{dep_name}"
+                os.makedirs(work_dir, exist_ok=True)
+                detected_method, src_dir = _auto_detect_method(dep_name, dep_ver, work_dir, args.verbose)
+                if detected_method:
+                    method = detected_method
+                    print(f"  → detected {method}, cross-compiling...")
+                elif src_dir:
+                    # Has no C extensions but pip failed anyway — report error
+                    print(f"  ✗ {dep_name}=={dep_ver} install FAILED (no C extensions found, pip error)")
+                    continue
                 else:
-                    print(f"  ✗ {dep_name}=={dep_ver} pure install failed, trying cross-build...")
-                    method = "setuptools"  # fallback
+                    # Could not even download sdist
+                    print(f"  ✗ {dep_name}=={dep_ver} install FAILED (could not download source)")
+                    continue
 
+            # --- Cross-compile (Meson or setuptools) ---
             if method in ("meson", "setuptools"):
                 if method == "meson":
                     builder = build_meson_package
@@ -701,20 +858,43 @@ def cmd_info(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="cross-pip: cross-compile Python packages for iOS")
+    parser = argparse.ArgumentParser(
+        description="cross-pip: cross-compile Python packages for iOS",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            Examples:
+              cross-pip install numpy
+              cross-pip install pandas==2.2.3
+              cross-pip install -v scipy --dry-run
+              cross-pip install -r requirements.txt --force-reinstall
+              cross-pip list
+              cross-pip info requests
+        """),
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="verbose output")
+    parser.add_argument("--version", action="store_true", help="show version and exit")
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     install_parser = sub.add_parser("install", help="install a package")
     install_parser.add_argument("package", nargs="?", help="package name (e.g. pandas or pandas==2.2.3)")
     install_parser.add_argument("-r", "--requirements", help="requirements file")
+    install_parser.add_argument("--force-reinstall", "-f", action="store_true",
+                                help="reinstall even if already installed")
+    install_parser.add_argument("--upgrade", "-U", action="store_true",
+                                help="upgrade to latest version (implies --force-reinstall)")
+    install_parser.add_argument("--dry-run", "-n", action="store_true",
+                                help="show what would be installed without doing it")
 
     list_parser = sub.add_parser("list", help="list installed packages")
     info_parser = sub.add_parser("info", help="show package info")
     info_parser.add_argument("package", help="package name")
 
     args = parser.parse_args()
+
+    if args.version:
+        print(f"cross-pip version {VERSION}")
+        return
 
     if args.command == "install":
         if not args.package and not args.requirements:
@@ -724,6 +904,8 @@ def main():
         cmd_list(args)
     elif args.command == "info":
         cmd_info(args)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
